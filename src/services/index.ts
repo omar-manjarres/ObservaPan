@@ -1,0 +1,12 @@
+export * as authService from "./authService";
+export * as userService from "./userService";
+export * as bakeryService from "./bakeryService";
+export * as formService from "./formService";
+export * as recordService from "./recordService";
+export * as indicatorService from "./indicatorService";
+export * as alertService from "./alertService";
+export * as auditService from "./auditService";
+export * as configService from "./configService";
+export * as reportService from "./reportService";
+export * as diagnosticEngine from "./diagnosticEngine";
+export * as scopedData from "./scopedData";
