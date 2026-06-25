@@ -1,0 +1,143 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Helpers ----------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function role() {
+      return userDoc().role;
+    }
+    function isActive() {
+      return userDoc().status == 'active';
+    }
+    function isAdmin() {
+      return isSignedIn() && role() == 'admin' && isActive();
+    }
+    function isSurveyor() {
+      return isSignedIn() && role() == 'surveyor' && isActive();
+    }
+    function isConsultant() {
+      return isSignedIn() && role() == 'consultant' && isActive();
+    }
+    function isBakeryUser() {
+      return isSignedIn() && role() == 'bakery' && isActive();
+    }
+    function assignedTo(bakeryId) {
+      return bakeryId in userDoc().assignedBakeryIds;
+    }
+    function ownsBakery(bakeryId) {
+      return userDoc().bakeryId == bakeryId;
+    }
+    // A user that may view a given bakery's individual data.
+    function canSeeBakery(bakeryId) {
+      return isAdmin() || isConsultant()
+        || (isSurveyor() && assignedTo(bakeryId))
+        || (isBakeryUser() && ownsBakery(bakeryId));
+    }
+
+    // ---------- users ----------
+    match /users/{uid} {
+      // A user can always read their own profile (needed to bootstrap role).
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      // Admins create any profile. Self-registration may only create an active
+      // bakery profile (no privilege escalation possible).
+      allow create: if isAdmin()
+        || (request.auth.uid == uid
+            && request.resource.data.role == 'bakery'
+            && request.resource.data.status == 'active');
+      // Admins update freely. A user may update their own profile (e.g. to set
+      // its bakeryId) but cannot change their own role or status.
+      allow update: if isAdmin()
+        || (request.auth.uid == uid
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.status == resource.data.status);
+      allow delete: if isAdmin();
+    }
+
+    // ---------- bakeries ----------
+    match /bakeries/{bakeryId} {
+      allow read: if canSeeBakery(bakeryId);
+      // Admins manage all bakeries. A bakery user may create its own bakery on
+      // self-registration and update its own basic data afterwards.
+      allow create: if isAdmin()
+        || (isBakeryUser()
+            && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.status == 'active');
+      allow update: if isAdmin() || (isBakeryUser() && ownsBakery(bakeryId));
+      allow delete: if isAdmin();
+    }
+
+    // ---------- forms (+ subcollections) ----------
+    match /forms/{formId} {
+      allow read: if isSignedIn() && isActive();
+      allow write: if isAdmin();
+      match /{sub=**} {
+        allow read: if isSignedIn() && isActive();
+        allow write: if isAdmin();
+      }
+    }
+
+    // ---------- records ----------
+    match /records/{recordId} {
+      allow read: if isSignedIn() && isActive() &&
+        (isAdmin() || isConsultant() || canSeeBakery(resource.data.bakeryId));
+      // Admins always; surveyors for assigned bakeries; bakery users for their own.
+      allow create: if isSignedIn() && isActive() && (
+        isAdmin() ||
+        (isSurveyor() && assignedTo(request.resource.data.bakeryId)) ||
+        (isBakeryUser() && ownsBakery(request.resource.data.bakeryId))
+      );
+      // Updates allowed to admin, or to surveyor/bakery on their own draft records.
+      allow update: if isSignedIn() && isActive() && (
+        isAdmin() ||
+        (isSurveyor() && assignedTo(resource.data.bakeryId) && resource.data.status == 'draft') ||
+        (isBakeryUser() && ownsBakery(resource.data.bakeryId) && resource.data.status == 'draft')
+      );
+      allow delete: if isAdmin();
+    }
+
+    // ---------- indicatorSnapshots ----------
+    match /indicatorSnapshots/{id} {
+      allow read: if isSignedIn() && isActive() &&
+        (isAdmin() || isConsultant() || canSeeBakery(resource.data.bakeryId));
+      allow create: if isSignedIn() && isActive() && (
+        isAdmin() || isSurveyor() ||
+        (isBakeryUser() && ownsBakery(request.resource.data.bakeryId))
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------- alerts ----------
+    match /alerts/{id} {
+      allow read: if isSignedIn() && isActive() && (
+        isAdmin() || isConsultant() ||
+        (resource.data.bakeryId == null) ||
+        canSeeBakery(resource.data.bakeryId)
+      );
+      allow create: if isSignedIn() && isActive() && (
+        isAdmin() || isSurveyor() ||
+        (isBakeryUser() && request.resource.data.bakeryId == userDoc().bakeryId)
+      );
+      allow update: if isAdmin() || isSurveyor();
+      allow delete: if isAdmin();
+    }
+
+    // ---------- auditLogs (write-only for users, read for admin) ----------
+    match /auditLogs/{id} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn() && isActive();
+      allow update, delete: if false;
+    }
+
+    // ---------- appConfig ----------
+    match /appConfig/{id} {
+      allow read: if isSignedIn() && isActive();
+      allow write: if isAdmin();
+    }
+  }
+}
